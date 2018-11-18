@@ -20,6 +20,9 @@ cur.execute(DBC)
 conn.commit()
 
 app = Flask(__name__)
+#    ,static_url_path='', 
+#    static_folder='dist',
+#    )
 app.config['SECRET_KEY'] = 'secret!'
 sio = SocketIO(app) # , message_queue='redis://')
 
@@ -38,10 +41,20 @@ def worker():
             sio.emit("chat message","Freq is: %s" % data.decode("utf-8"))
             eventlet.sleep(0.5)
 
-@app.route('/')
-def index():
-    """Serve the client-side application."""
-    return render_template('index.html')
+root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+
+@app.route('/<path:path>', methods=['GET'])
+def static_proxy(path):
+    return send_from_directory(root, path)
+
+@app.route('/', methods=['GET'])
+def redirect_to_index():
+    return send_from_directory(root, 'index.html')
+
+#@app.route('/')
+#def index():
+#    """Serve the client-side application."""
+#    return render_template('index.html')
 
 @sio.on('connect')
 def connect():
