@@ -21,3 +21,5 @@ yarn-error.log*
 *.sw*
 
 __pycache__
+# python virtual env
+.venv
