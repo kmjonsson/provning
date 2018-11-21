@@ -15,34 +15,31 @@ conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
 # Create :-)
 cur = conn.cursor()
-DBC = 'CREATE TABLE IF NOT EXISTS log (id serial,msg text);'
+DBC = '''
+CREATE TABLE IF NOT EXISTS votes (
+    id      text not null,
+    name    text not null,
+    votes   integer[] not null
+)
+'''
 cur.execute(DBC)
 conn.commit()
 
+FETCH_ALL_VOTES = '''
+SELECT v.id, a.number, a.value 
+FROM   votes AS v
+LEFT   JOIN LATERAL unnest(v.votes)
+                    WITH ORDINALITY AS a(value, number) ON TRUE
+WHERE value IS NOT NULL and value > -9999
+'''
+
 app = Flask(__name__)
-#    ,static_url_path='', 
-#    static_folder='dist',
-#    )
-app.config['SECRET_KEY'] = 'secret!'
+app.config['SECRET_KEY'] = os.environ['SECRET_KEY']
 sio = SocketIO(app) # , message_queue='redis://')
-
-th = None
-
-HOST = '192.168.2.123'  # The server's hostname or IP address
-PORT = 4532        # The port used by the server
-
-def worker():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((HOST, PORT))
-        while True:
-            s.sendall(b"f\n")
-            data = s.recv(1024)
-            #print('Received', str(data)) #repr(data))
-            sio.emit("chat message","Freq is: %s" % data.decode("utf-8"))
-            eventlet.sleep(0.5)
 
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
 
+# serve application
 @app.route('/<path:path>', methods=['GET'])
 def static_proxy(path):
     return send_from_directory(root, path)
@@ -51,41 +48,42 @@ def static_proxy(path):
 def redirect_to_index():
     return send_from_directory(root, 'index.html')
 
-#@app.route('/')
-#def index():
-#    """Serve the client-side application."""
-#    return render_template('index.html')
-
 @sio.on('connect')
 def connect():
+    print("Connect: %s" % (request.sid))
     cur = conn.cursor()
-    cur.execute('select msg from log order by id')
+    cur.execute('select id,name from votes')
     for msg in cur.fetchall():
-        emit('chat message',"replay: %s" % msg[0])
-    #emit('chat message',DATABASE_URL)
-    #global th
-    #print('connect (%s)' % request.sid)
-    #print('connect')
-    #if not th:
-        #th = eventlet.spawn(worker)
-        #print(th)
-
-@sio.on('chat message')
-def chat_message(data):
-    #print('chat message ', data)
-    cur = conn.cursor()
-    cur.execute('INSERT INTO log (msg) values (%(msg)s)',{ 'msg': data })
-    conn.commit()
-    emit('chat message',"OK")
-    sio.emit('chat message', "[%s] %s" % (request.sid,data))
+        emit('register',{ 'id': msg[0], 'name': msg[1]})
+    cur.execute(FETCH_ALL_VOTES)
+    for msg in cur.fetchall():
+        print("%s => %s = %s" % (msg[0],msg[1],msg[2]))
+        emit('vote',{'id':msg[0],'number':msg[1]-1,'value': msg[2]})
 
 @sio.on('disconnect')
 def disconnect():
-    pass
-    #global th
-    #print('disconnect ')
-    #th.kill()
-    #th = None
+    print("Disconnect: %s" % (request.sid))
+
+@sio.on('register')
+def on_register(id,name):
+    cur = conn.cursor()
+    cur.execute("INSERT INTO votes values(%(id)s,%(name)s,'{-9999}')",{ 'id': id, 'name': name })
+    conn.commit()
+    sio.emit('register', {'id': id, 'name': name})
+
+@sio.on('vote')
+def vote(id,number,value):
+    if number < 0:
+        return
+    cur = conn.cursor()
+    cur.execute('UPDATE votes set votes[%(number)s] = %(value)s WHERE id = %(id)s',{ 'value': value, 'number': number+1, 'id': id })
+    conn.commit()
+    sio.emit('vote',{'id':id,'number':number,'value': value})
+    print("Vote: %s[%d]=%d" % (id,number,value))
+
+@sio.on('disconnect')
+def disconnect():
+    print("Disconnect: %s" % (request.sid));
 
 if __name__ == '__main__':
     sio.run(app)
